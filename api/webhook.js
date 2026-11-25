@@ -6,6 +6,10 @@ const BOT_TOKEN = process.env.BOT_TOKEN || '';
 const SMM_API_KEY = process.env.SMM_API_KEY || '';
 const SMM_API_URL = process.env.SMM_API_URL || 'https://minismm.com/api/v2';
 
+const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL || '';
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
+const REDIS_KEY = 'efty_smm_panel_bd_db_v1';
+
 // Fixed Configuration
 const ADMIN_CHAT_ID = Number(process.env.ADMIN_ID || '1806670882');
 const ADMIN_USERNAME = '@Efty67';
@@ -15,32 +19,84 @@ const EXTRA_PROFIT = 10; // প্রতিটি রেটের সাথে +
 const REFERRAL_BONUS = 2.00; // প্রতি সফল রেফারে ২ টাকা বোনাস
 
 const smm = new SmmApi(SMM_API_KEY, SMM_API_URL);
-
 const DB_FILE = path.join('/tmp', 'efty_tg_bot_db.json');
-let memoryStore = null;
 let cachedBotUsername = '';
 
-function getDb() {
-  if (memoryStore) return memoryStore;
-  try {
-    if (fs.existsSync(DB_FILE)) {
-      memoryStore = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-      return memoryStore;
-    }
-  } catch {}
-  memoryStore = { users: {}, payments: [], orders: [], states: {} };
-  return memoryStore;
+function defaultDb() {
+  return { users: {}, payments: [], orders: [], states: {} };
 }
 
-function saveDb(db) {
-  memoryStore = db;
+function readTmpDb() {
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+      return {
+        users: parsed.users || {},
+        payments: parsed.payments || [],
+        orders: parsed.orders || [],
+        states: parsed.states || {},
+      };
+    }
+  } catch {}
+  return defaultDb();
+}
+
+function writeTmpDb(db) {
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf8');
   } catch {}
 }
 
+async function getDb() {
+  if (REDIS_URL && REDIS_TOKEN) {
+    try {
+      const res = await fetch(`${REDIS_URL}/get/${encodeURIComponent(REDIS_KEY)}`, {
+        headers: { Authorization: `Bearer ${REDIS_TOKEN}` },
+        cache: 'no-store',
+      });
+      const data = await res.json();
+      if (data && data.result) {
+        const parsed = typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
+        const db = {
+          users: parsed.users || {},
+          payments: parsed.payments || [],
+          orders: parsed.orders || [],
+          states: parsed.states || {},
+        };
+        writeTmpDb(db);
+        return db;
+      }
+      const fresh = readTmpDb();
+      return fresh;
+    } catch (err) {
+      console.error('Redis read error, fallback to /tmp:', err);
+      return readTmpDb();
+    }
+  }
+  return readTmpDb();
+}
+
+async function saveDb(db) {
+  writeTmpDb(db);
+  if (REDIS_URL && REDIS_TOKEN) {
+    try {
+      await fetch(`${REDIS_URL}/set/${encodeURIComponent(REDIS_KEY)}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${REDIS_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(db),
+      });
+    } catch (err) {
+      console.error('Redis write error:', err);
+    }
+  }
+}
+
 function ensureUser(db, tgUser) {
   const id = String(tgUser.id);
+  let created = false;
   if (!db.users[id]) {
     db.users[id] = {
       id: Number(tgUser.id),
@@ -52,12 +108,15 @@ function ensureUser(db, tgUser) {
       referralsCount: 0,
       referredBy: null,
     };
-    saveDb(db);
+    created = true;
   } else {
     if (db.users[id].referralsCount === undefined) db.users[id].referralsCount = 0;
     if (db.users[id].referredBy === undefined) db.users[id].referredBy = null;
+    if (tgUser.first_name && db.users[id].name !== tgUser.first_name) {
+      db.users[id].name = tgUser.first_name;
+    }
   }
-  return db.users[id];
+  return { user: db.users[id], created };
 }
 
 async function tg(method, payload = {}) {
@@ -122,7 +181,6 @@ function mainKeyboard(isAdmin = false) {
   return { inline_keyboard: rows };
 }
 
-// API রেট (যেমন 0.12) -> 12 টাকা BDT + 10 টাকা লাভ = 22 টাকা
 function getServiceRateBdt(apiRate) {
   const baseBdt = Number(apiRate || 0) * BDT_MULTIPLIER;
   return Number((baseBdt + EXTRA_PROFIT).toFixed(2));
@@ -134,10 +192,7 @@ function calcUserPrice(apiRate, qty = 1000, isPackage = false) {
   return Number(((ratePer1k / 1000) * Number(qty)).toFixed(2));
 }
 
-async function sendHomeMenu(chatId, tgUser, db) {
-  const user = ensureUser(db, tgUser);
-  const isAdmin = Number(tgUser.id) === ADMIN_CHAT_ID;
-
+async function sendHomeMenu(chatId, user, isAdmin) {
   const text =
     `✨ <b>স্বাগতম Efty Smm Panel BD 🇧🇩</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
@@ -179,8 +234,7 @@ async function sendAdminMenu(chatId, db) {
   );
 }
 
-async function sendReferralInfo(chatId, tgUser, db) {
-  const user = ensureUser(db, tgUser);
+async function sendReferralInfo(chatId, user) {
   const botUsername = await getBotUsername();
   const refLink = `https://t.me/${botUsername}?start=ref_${user.id}`;
   const refCount = Number(user.referralsCount || 0);
@@ -202,7 +256,7 @@ async function sendReferralInfo(chatId, tgUser, db) {
   });
 }
 
-async function sendOrderConfirmation(chatId, from, user, draft, isAdmin) {
+async function sendOrderConfirmation(chatId, user, draft, isAdmin) {
   const ratePer1k = getServiceRateBdt(draft.apiRate);
   const totalCost = calcUserPrice(draft.apiRate, draft.quantity, draft.isPackage);
   const balAfter = Number(user.balance) - totalCost;
@@ -250,34 +304,34 @@ export default async function handler(req, res) {
 
   try {
     const update = req.body || {};
-    const db = getDb();
+    const db = await getDb();
 
-    // ১. বাটন ক্লিক (Callback Query)
     if (update.callback_query) {
       const cb = update.callback_query;
       const from = cb.from;
       const chatId = cb.message?.chat?.id || from.id;
       const data = cb.data || '';
       const isAdmin = Number(from.id) === ADMIN_CHAT_ID;
-      const user = ensureUser(db, from);
+      const { user, created } = ensureUser(db, from);
+      if (created) await saveDb(db);
 
       await tg('answerCallbackQuery', { callback_query_id: cb.id });
 
       if (data === 'home') {
         delete db.states[String(from.id)];
-        saveDb(db);
-        await sendHomeMenu(chatId, from, db);
+        await saveDb(db);
+        await sendHomeMenu(chatId, user, isAdmin);
         return res.status(200).json({ ok: true });
       }
 
       if (data === 'menu_refer') {
-        await sendReferralInfo(chatId, from, db);
+        await sendReferralInfo(chatId, user);
         return res.status(200).json({ ok: true });
       }
 
       if (data === 'confirm_order_no') {
         delete db.states[String(from.id)];
-        saveDb(db);
+        await saveDb(db);
         await sendMsg(chatId, '❌ অর্ডারটি বাতিল করা হয়েছে।', mainKeyboard(isAdmin));
         return res.status(200).json({ ok: true });
       }
@@ -292,7 +346,7 @@ export default async function handler(req, res) {
         const charge = calcUserPrice(state.apiRate, state.quantity, state.isPackage);
         if (Number(user.balance) < charge) {
           delete db.states[String(from.id)];
-          saveDb(db);
+          await saveDb(db);
           await sendMsg(
             chatId,
             `❌ <b>অপর্যাপ্ত ব্যালেন্স!</b>\nমোট খরচ: <b>${charge.toFixed(2)} টাকা</b>, আপনার ব্যালেন্স: <b>${Number(user.balance).toFixed(2)} টাকা</b>`,
@@ -301,19 +355,14 @@ export default async function handler(req, res) {
           return res.status(200).json({ ok: true });
         }
 
-        const payload = {
-          service: state.serviceId,
-          link: state.link,
-        };
-        if (!state.isPackage) {
-          payload.quantity = state.quantity;
-        }
+        const payload = { service: state.serviceId, link: state.link };
+        if (!state.isPackage) payload.quantity = state.quantity;
 
         const apiRes = await smm.order(payload);
         delete db.states[String(from.id)];
 
         if (!apiRes || !apiRes.order) {
-          saveDb(db);
+          await saveDb(db);
           await sendMsg(
             chatId,
             `❌ <b>অর্ডার সাবমিট হয়নি!</b>\nকারণ: ${apiRes?.error || 'API Error'}\nআপনার ব্যালেন্স কাটা হয়নি।`,
@@ -333,7 +382,7 @@ export default async function handler(req, res) {
           quantity: state.isPackage ? 1 : state.quantity,
           charge,
         });
-        saveDb(db);
+        await saveDb(db);
 
         await sendMsg(
           chatId,
@@ -350,7 +399,7 @@ export default async function handler(req, res) {
 
       if (data === 'menu_deposit') {
         db.states[String(from.id)] = { step: 'deposit_amount' };
-        saveDb(db);
+        await saveDb(db);
         await sendMsg(
           chatId,
           `💳 <b>bKash ব্যালেন্স অ্যাড</b>\n\n` +
@@ -390,7 +439,7 @@ export default async function handler(req, res) {
 
       if (data === 'menu_order') {
         db.states[String(from.id)] = { step: 'order_service_id' };
-        saveDb(db);
+        await saveDb(db);
         await sendMsg(
           chatId,
           `🛍 <b>নতুন অর্ডার করুন</b>\n\n` +
@@ -425,7 +474,7 @@ export default async function handler(req, res) {
 
       if (data === 'menu_status') {
         db.states[String(from.id)] = { step: 'check_status_id' };
-        saveDb(db);
+        await saveDb(db);
         await sendMsg(
           chatId,
           `🔍 <b>অর্ডার স্ট্যাটাস চেক</b>\n\nআপনার <b>Order ID</b> নম্বরটি লিখে পাঠান:`,
@@ -443,7 +492,7 @@ export default async function handler(req, res) {
       if (data === 'admin_add_bal_prompt') {
         if (!isAdmin) return res.status(200).json({ ok: true });
         db.states[String(from.id)] = { step: 'admin_add_bal_input' };
-        saveDb(db);
+        await saveDb(db);
         await sendMsg(
           chatId,
           `➕ <b>ইউজার ব্যালেন্স অ্যাড</b>\n\nইউজারের <b>User ID</b> এবং <b>টাকার পরিমাণ</b> স্পেস দিয়ে লিখুন:\nউদাহরণ: <code>123456789 200</code>`,
@@ -478,7 +527,7 @@ export default async function handler(req, res) {
             targetUser.balance = Number((Number(targetUser.balance) + Number(payItem.amount)).toFixed(2));
             targetUser.totalDeposit = Number((Number(targetUser.totalDeposit || 0) + Number(payItem.amount)).toFixed(2));
           }
-          saveDb(db);
+          await saveDb(db);
 
           await sendMsg(
             chatId,
@@ -495,7 +544,7 @@ export default async function handler(req, res) {
           );
         } else {
           payItem.status = 'rejected';
-          saveDb(db);
+          await saveDb(db);
 
           await sendMsg(chatId, `❌ TrxID <code>${payItem.trxId}</code> রিজেক্ট করা হয়েছে।`);
           await sendMsg(
@@ -510,7 +559,6 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    // ২. টেক্সট মেসেজ হ্যান্ডলিং
     const msg = update.message;
     if (!msg || !msg.text) {
       return res.status(200).json({ ok: true });
@@ -521,13 +569,12 @@ export default async function handler(req, res) {
     const text = msg.text.trim();
     const isAdmin = Number(from.id) === ADMIN_CHAT_ID;
 
-    const existingUser = db.users[String(from.id)];
-    const isNewUser = !existingUser;
-    const user = ensureUser(db, from);
+    const isNewUser = !db.users[String(from.id)];
+    const { user } = ensureUser(db, from);
 
     if (text === '/admin' || text.startsWith('/admin@')) {
       delete db.states[String(from.id)];
-      saveDb(db);
+      await saveDb(db);
       if (!isAdmin) {
         await sendMsg(chatId, '⛔ শুধুমাত্র অ্যাডমিন এই কমান্ড ব্যবহার করতে পারবেন।', mainKeyboard(false));
         return res.status(200).json({ ok: true });
@@ -554,20 +601,22 @@ export default async function handler(req, res) {
             (Number(db.users[referrerId].balance || 0) + REFERRAL_BONUS).toFixed(2)
           );
           db.users[referrerId].referralsCount = Number(db.users[referrerId].referralsCount || 0) + 1;
-          saveDb(db);
-
-          await sendMsg(
-            Number(referrerId),
-            `🎉 <b>নতুন রেফার বোনাস!</b>\n` +
-              `আপনার লিংক থেকে <b>${user.name}</b> বটে যুক্ত হয়েছেন।\n` +
-              `💰 আপনার ব্যালেন্সে <b>+${REFERRAL_BONUS.toFixed(2)} টাকা</b> যোগ হয়েছে!\n` +
-              `💳 বর্তমান ব্যালেন্স: <b>${Number(db.users[referrerId].balance).toFixed(2)} টাকা</b>`
-          ).catch(() => {});
         }
       }
 
-      saveDb(db);
-      await sendHomeMenu(chatId, from, db);
+      await saveDb(db);
+      await sendHomeMenu(chatId, user, isAdmin);
+
+      if (user.referredBy && db.users[user.referredBy] && isNewUser) {
+        await sendMsg(
+          Number(user.referredBy),
+          `🎉 <b>নতুন রেফার বোনাস!</b>\n` +
+            `আপনার লিংক থেকে <b>${user.name}</b> বটে যুক্ত হয়েছেন।\n` +
+            `💰 আপনার ব্যালেন্সে <b>+${REFERRAL_BONUS.toFixed(2)} টাকা</b> যোগ হয়েছে!\n` +
+            `💳 বর্তমান ব্যালেন্স: <b>${Number(db.users[user.referredBy].balance).toFixed(2)} টাকা</b>`
+        ).catch(() => {});
+      }
+
       return res.status(200).json({ ok: true });
     }
 
@@ -626,7 +675,7 @@ export default async function handler(req, res) {
       }
 
       db.users[targetId].balance = Number((Number(db.users[targetId].balance) + amount).toFixed(2));
-      saveDb(db);
+      await saveDb(db);
 
       await sendMsg(
         chatId,
@@ -666,7 +715,7 @@ export default async function handler(req, res) {
         }
         db.users[targetId].balance = Number((Number(db.users[targetId].balance) + amount).toFixed(2));
         delete db.states[String(from.id)];
-        saveDb(db);
+        await saveDb(db);
 
         await sendMsg(chatId, `✅ User <code>${targetId}</code>-এর নতুন ব্যালেন্স: <b>${db.users[targetId].balance.toFixed(2)} টাকা</b>`, mainKeyboard(true));
         await sendMsg(Number(targetId), `💰 আপনার অ্যাকাউন্টে <b>${amount} টাকা</b> ব্যালেন্স যোগ হয়েছে! বর্তমান ব্যালেন্স: <b>${db.users[targetId].balance.toFixed(2)} টাকা</b>`).catch(() => {});
@@ -680,7 +729,7 @@ export default async function handler(req, res) {
           return res.status(200).json({ ok: true });
         }
         db.states[String(from.id)] = { step: 'deposit_trxid', amount: amt };
-        saveDb(db);
+        await saveDb(db);
         await sendMsg(
           chatId,
           `✅ পরিমাণ: <b>${amt} টাকা</b>\n\nএখন আপনার bKash <b>Transaction ID (TrxID)</b> টি লিখে পাঠান (যেমন: <code>8N7F6D5S4A</code>):`
@@ -711,7 +760,7 @@ export default async function handler(req, res) {
 
         db.payments.push(payRecord);
         delete db.states[String(from.id)];
-        saveDb(db);
+        await saveDb(db);
 
         await sendMsg(
           chatId,
@@ -766,7 +815,7 @@ export default async function handler(req, res) {
           max: Number(srv.max || 100000),
           isPackage: srv.type === 'Package',
         };
-        saveDb(db);
+        await saveDb(db);
 
         await sendMsg(
           chatId,
@@ -787,13 +836,13 @@ export default async function handler(req, res) {
         if (state.isPackage) {
           const draft = { ...state, step: 'order_confirm', link: text, quantity: 1 };
           db.states[String(from.id)] = draft;
-          saveDb(db);
-          await sendOrderConfirmation(chatId, from, user, draft, isAdmin);
+          await saveDb(db);
+          await sendOrderConfirmation(chatId, user, draft, isAdmin);
           return res.status(200).json({ ok: true });
         }
 
         db.states[String(from.id)] = { ...state, step: 'order_qty', link: text };
-        saveDb(db);
+        await saveDb(db);
 
         await sendMsg(
           chatId,
@@ -811,38 +860,53 @@ export default async function handler(req, res) {
 
         const draft = { ...state, step: 'order_confirm', quantity: qty };
         db.states[String(from.id)] = draft;
-        saveDb(db);
-        await sendOrderConfirmation(chatId, from, user, draft, isAdmin);
+        await saveDb(db);
+        await sendOrderConfirmation(chatId, user, draft, isAdmin);
         return res.status(200).json({ ok: true });
       }
 
       if (state.step === 'check_status_id') {
         const orderId = Number(text);
         delete db.states[String(from.id)];
-        saveDb(db);
+        await saveDb(db);
+
         if (!orderId) {
-          await sendMsg(chatId, '⚠️ সঠিক Order ID দিন।', mainKeyboard(isAdmin));
+          await sendMsg(chatId, '⚠️ সঠিক <b>Order ID</b> নম্বর দিন (Service ID না)।', mainKeyboard(isAdmin));
           return res.status(200).json({ ok: true });
         }
+
         const st = await smm.status(orderId);
+        if (!st || st.error || !st.status) {
+          await sendMsg(
+            chatId,
+            `❌ <b>অর্ডার #${orderId}-এর স্ট্যাটাস পাওয়া যায়নি।</b>\n` +
+              `কারণ: <b>${st?.error || 'সঠিক Order ID নয় বা API থেকে রেসপন্স আসেনি'}</b>\n\n` +
+              `💡 টিপস: <b>ইতিহাস / অর্ডার</b> থেকে আপনার আসল Order ID চেক করুন।`,
+            mainKeyboard(isAdmin)
+          );
+          return res.status(200).json({ ok: true });
+        }
+
         await sendMsg(
           chatId,
           `🔍 <b>অর্ডার স্ট্যাটাস (#${orderId}):</b>\n` +
-            `📊 Status: <b>${st.status || 'Unknown'}</b>\n` +
-            `▶️ Start Count: ${st.start_count ?? '-'}\n` +
-            `⏳ Remains: ${st.remains ?? '-'}`,
+            `📊 Status: <b>${st.status}</b>\n` +
+            `▶️ Start Count: <b>${st.start_count ?? '-'}</b>\n` +
+            `⏳ Remains: <b>${st.remains ?? '-'}</b>`,
           mainKeyboard(isAdmin)
         );
         return res.status(200).json({ ok: true });
       }
     }
 
-    await sendHomeMenu(chatId, from, db);
+    if (created) await saveDb(db);
+    await sendHomeMenu(chatId, user, isAdmin);
     return res.status(200).json({ ok: true });
   } catch (err) {
     console.error('Telegram webhook error:', err);
     return res.status(200).json({ ok: true });
   }
 }
+
 
 
