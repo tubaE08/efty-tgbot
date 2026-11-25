@@ -10,8 +10,8 @@ const SMM_API_URL = process.env.SMM_API_URL || 'https://minismm.com/api/v2';
 const ADMIN_CHAT_ID = Number(process.env.ADMIN_ID || '1806670882');
 const ADMIN_USERNAME = '@Efty67';
 const BKASH_NUMBER = '01985060380';
-const PROFIT_MULTIPLIER = 1.10; // API রেটের ওপর ১০% লাভ
-const REFERRAL_BONUS = 2.00; // প্রতি সফল রেফারে ২ টাকা বোনাস
+const PROFIT_MULTIPLIER = 1.10; // ১০% লাভ
+const REFERRAL_BONUS = 2.00; // প্রতি রেফারে ২ টাকা বোনাস
 
 const smm = new SmmApi(SMM_API_KEY, SMM_API_URL);
 
@@ -132,7 +132,11 @@ async function sendHomeMenu(chatId, tgUser, db) {
   const isAdmin = Number(tgUser.id) === ADMIN_CHAT_ID;
 
   const text =
-    `✨ <b>Efty Smm Panel BD 🇧🇩</b>\n` +
+    `✨ <b>স্বাগতম Efty Smm Panel BD 🇧🇩</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `⚡ <b>সবচেয়ে কম দামে সব সার্ভিস!</b>\n` +
+    `🎁 <b>প্রতি রেফারে বোনাস:</b> <b>${REFERRAL_BONUS.toFixed(2)} টাকা</b>\n` +
+    `💳 <b>bKash Deposit:</b> <code>${BKASH_NUMBER}</code>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `👤 <b>নাম:</b> ${user.name}\n` +
     `🆔 <b>আপনার User ID:</b> <code>${user.id}</code>\n` +
@@ -140,9 +144,32 @@ async function sendHomeMenu(chatId, tgUser, db) {
     `👥 <b>মোট রেফার:</b> ${user.referralsCount || 0} জন\n` +
     `📦 <b>মোট অর্ডার:</b> ${user.ordersCount} টি\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `নিচের বাটন থেকে আপনার প্রয়োজনীয় অপশন বেছে নিন:`;
+    `নিচের বাটন থেকে আপনার প্রয়োজনীয় কাজ শুরু করুন:`;
 
   return sendMsg(chatId, text, mainKeyboard(isAdmin));
+}
+
+async function sendAdminMenu(chatId, db) {
+  const apiBal = await smm.balance().catch(() => null);
+  const pendingPays = db.payments.filter((p) => p.status === 'pending');
+
+  return sendMsg(
+    chatId,
+    `🛠 <b>Admin Dashboard (@Efty67)</b>\n\n` +
+      `📡 <b>MiniSMM API Balance:</b> <b>${apiBal?.balance ?? 'N/A'} ${apiBal?.currency || ''}</b>\n` +
+      `👥 <b>মোট ইউজার:</b> ${Object.keys(db.users).length} জন\n` +
+      `⏳ <b>Pending bKash:</b> ${pendingPays.length} টি\n` +
+      `📦 <b>মোট অর্ডার:</b> ${db.orders.length} টি\n\n` +
+      `<b>দ্রুত ব্যালেন্স অ্যাড কমান্ড:</b>\n` +
+      `<code>/addbalance USER_ID AMOUNT</code>\n` +
+      `উদাহরণ: <code>/addbalance 1806670882 100</code>`,
+    {
+      inline_keyboard: [
+        [{ text: '➕ ইউজার ব্যালেন্স অ্যাড করুন', callback_data: 'admin_add_bal_prompt' }],
+        [{ text: '🔙 হোম মেনু', callback_data: 'home' }],
+      ],
+    }
+  );
 }
 
 async function sendReferralInfo(chatId, tgUser, db) {
@@ -178,9 +205,9 @@ async function sendOrderConfirmation(chatId, from, user, draft, isAdmin) {
     `📦 <b>সার্ভিস:</b> ${draft.serviceName} (ID: <code>${draft.serviceId}</code>)\n` +
     `🔗 <b>লিংক:</b> <code>${draft.link}</code>\n` +
     `🔢 <b>পরিমাণ:</b> <b>${draft.isPackage ? 'Package (1)' : draft.quantity}</b>\n` +
-    `💵 <b>মোট খরচ (১০% লাভসহ):</b> <b>${totalCost.toFixed(4)}</b>\n` +
-    `💳 <b>আপনার বর্তমান ব্যালেন্স:</b> <b>${Number(user.balance).toFixed(2)}</b>\n` +
-    `📉 <b>অর্ডারের পর ব্যালেন্স থাকবে:</b> <b>${balAfter >= 0 ? balAfter.toFixed(2) : 'অপর্যাপ্ত'}</b>\n` +
+    `💵 <b>মোট খরচ:</b> <b>${totalCost.toFixed(2)} টাকা</b>\n` +
+    `💳 <b>আপনার বর্তমান ব্যালেন্স:</b> <b>${Number(user.balance).toFixed(2)} টাকা</b>\n` +
+    `📉 <b>অর্ডারের পর ব্যালেন্স থাকবে:</b> <b>${balAfter >= 0 ? balAfter.toFixed(2) : 'অপর্যাপ্ত'} টাকা</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `অর্ডারটি কি কনফার্ম করবেন?`;
 
@@ -206,6 +233,10 @@ async function sendOrderConfirmation(chatId, from, user, draft, isAdmin) {
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(200).json({ ok: true, bot: 'Efty Smm Panel Bot Active' });
+  }
+
+  if (!BOT_TOKEN) {
+    return res.status(200).json({ ok: false, error: 'BOT_TOKEN missing in environment' });
   }
 
   try {
@@ -255,7 +286,7 @@ export default async function handler(req, res) {
           saveDb(db);
           await sendMsg(
             chatId,
-            `❌ <b>অপর্যাপ্ত ব্যালেন্স!</b>\nমোট খরচ: <b>${charge.toFixed(4)}</b>, আপনার ব্যালেন্স: <b>${Number(user.balance).toFixed(2)}</b>`,
+            `❌ <b>অপর্যাপ্ত ব্যালেন্স!</b>\nমোট খরচ: <b>${charge.toFixed(2)} টাকা</b>, আপনার ব্যালেন্স: <b>${Number(user.balance).toFixed(2)} টাকা</b>`,
             mainKeyboard(isAdmin)
           );
           return res.status(200).json({ ok: true });
@@ -301,8 +332,8 @@ export default async function handler(req, res) {
             `🆔 <b>Order ID:</b> <code>${apiRes.order}</code>\n` +
             `📦 <b>সার্ভিস:</b> ${state.serviceName}\n` +
             `🔢 <b>পরিমাণ:</b> <b>${state.isPackage ? 'Package (1)' : state.quantity}</b>\n` +
-            `💰 <b>মোট খরচ:</b> <b>${charge.toFixed(4)}</b>\n` +
-            `💳 <b>অবশিষ্ট ব্যালেন্স:</b> <b>${user.balance.toFixed(2)}</b>`,
+            `💰 <b>মোট খরচ:</b> <b>${charge.toFixed(2)} টাকা</b>\n` +
+            `💳 <b>অবশিষ্ট ব্যালেন্স:</b> <b>${user.balance.toFixed(2)} টাকা</b>`,
           mainKeyboard(isAdmin)
         );
         return res.status(200).json({ ok: true });
@@ -331,12 +362,12 @@ export default async function handler(req, res) {
 
         const sample = services.slice(0, 15).map((s) => {
           const userRate1k = (Number(s.rate || 0) * PROFIT_MULTIPLIER).toFixed(2);
-          return `🔹 ID: <code>${s.service}</code> — <b>${s.name}</b>\n   💵 রেট (প্রতি 1000): <b>${userRate1k}</b> | Min: ${s.min} | Max: ${s.max}`;
+          return `🔹 ID: <code>${s.service}</code> — <b>${s.name}</b>\n   💵 রেট (প্রতি 1000): <b>${userRate1k} টাকা</b> | Min: ${s.min} | Max: ${s.max}`;
         });
 
         await sendMsg(
           chatId,
-          `📋 <b>জনপ্রিয় সার্ভিস লিস্ট (১-১৫):</b>\n\n${sample.join('\n\n')}\n\n` +
+          `📋 <b>সবচেয়ে কম দামে সার্ভিস লিস্ট (১-১৫):</b>\n\n${sample.join('\n\n')}\n\n` +
             `🔎 নির্দিষ্ট সার্ভিস খুঁজতে লিখুন: <code>/search instagram</code> বা <code>/search tiktok</code>`,
           {
             inline_keyboard: [
@@ -366,7 +397,7 @@ export default async function handler(req, res) {
         const myPays = db.payments.filter((p) => Number(p.userId) === Number(from.id)).slice(-5).reverse();
 
         const ordText = myOrders.length
-          ? myOrders.map((o) => `• Order #<code>${o.smmOrderId}</code> | Service: ${o.serviceId} | Qty: ${o.quantity} | চার্জ: <b>${o.charge}</b>`).join('\n')
+          ? myOrders.map((o) => `• Order #<code>${o.smmOrderId}</code> | Service: ${o.serviceId} | Qty: ${o.quantity} | চার্জ: <b>${Number(o.charge).toFixed(2)}৳</b>`).join('\n')
           : 'কোনো অর্ডার পাওয়া যায়নি।';
 
         const payText = myPays.length
@@ -396,26 +427,7 @@ export default async function handler(req, res) {
 
       if (data === 'menu_admin') {
         if (!isAdmin) return res.status(200).json({ ok: true });
-        const apiBal = await smm.balance().catch(() => null);
-        const pendingPays = db.payments.filter((p) => p.status === 'pending');
-
-        await sendMsg(
-          chatId,
-          `🛠 <b>Admin Dashboard (@Efty67)</b>\n\n` +
-            `📡 <b>MiniSMM API Balance:</b> <b>${apiBal?.balance ?? 'N/A'} ${apiBal?.currency || ''}</b>\n` +
-            `👥 <b>মোট ইউজার:</b> ${Object.keys(db.users).length} জন\n` +
-            `⏳ <b>Pending bKash:</b> ${pendingPays.length} টি\n` +
-            `📦 <b>মোট অর্ডার:</b> ${db.orders.length} টি\n\n` +
-            `<b>দ্রুত ব্যালেন্স অ্যাড কমান্ড:</b>\n` +
-            `<code>/addbalance USER_ID AMOUNT</code>\n` +
-            `উদাহরণ: <code>/addbalance 1806670882 100</code>`,
-          {
-            inline_keyboard: [
-              [{ text: '➕ ইউজার ব্যালেন্স অ্যাড করুন', callback_data: 'admin_add_bal_prompt' }],
-              [{ text: '🔙 হোম মেনু', callback_data: 'home' }],
-            ],
-          }
-        );
+        await sendAdminMenu(chatId, db);
         return res.status(200).json({ ok: true });
       }
 
@@ -504,8 +516,18 @@ export default async function handler(req, res) {
     const isNewUser = !existingUser;
     const user = ensureUser(db, from);
 
-    // /start বা /start ref_<id>
-    if (text === '/start' || text.startsWith('/start ') || text === '/menu') {
+    if (text === '/admin' || text.startsWith('/admin@')) {
+      delete db.states[String(from.id)];
+      saveDb(db);
+      if (!isAdmin) {
+        await sendMsg(chatId, '⛔ শুধুমাত্র অ্যাডমিন এই কমান্ড ব্যবহার করতে পারবেন।', mainKeyboard(false));
+        return res.status(200).json({ ok: true });
+      }
+      await sendAdminMenu(chatId, db);
+      return res.status(200).json({ ok: true });
+    }
+
+    if (text === '/start' || text.startsWith('/start ') || text.startsWith('/start@') || text === '/menu' || text.startsWith('/menu@')) {
       delete db.states[String(from.id)];
 
       const startPayload = text.startsWith('/start ') ? text.slice(7).trim() : '';
@@ -543,7 +565,7 @@ export default async function handler(req, res) {
     if (text.toLowerCase().startsWith('/search')) {
       const kw = text.slice(7).trim().toLowerCase();
       if (!kw) {
-        await sendMsg(chatId, '🔎 লিখুন: <code>/search instagram</code> বা <code>/search followers</code>');
+        await sendMsg(chatId, '🔎 লিখুন: <code>/search instagram</code> বা <code>/search tiktok</code>');
         return res.status(200).json({ ok: true });
       }
       const services = await smm.services();
@@ -558,7 +580,7 @@ export default async function handler(req, res) {
 
       const listText = matched.map((s) => {
         const rate1k = (Number(s.rate || 0) * PROFIT_MULTIPLIER).toFixed(2);
-        return `🔹 ID: <code>${s.service}</code> — <b>${s.name}</b>\n   💵 রেট/1k: <b>${rate1k}</b> | Min: ${s.min} | Max: ${s.max}`;
+        return `🔹 ID: <code>${s.service}</code> — <b>${s.name}</b>\n   💵 রেট/1k: <b>${rate1k} টাকা</b> | Min: ${s.min} | Max: ${s.max}`;
       });
 
       await sendMsg(chatId, `🔎 <b>সার্চ রেজাল্ট:</b>\n\n${listText.join('\n\n')}`, {
@@ -725,7 +747,7 @@ export default async function handler(req, res) {
           return res.status(200).json({ ok: true });
         }
 
-        const userRate1k = (Number(srv.rate || 0) * PROFIT_MULTIPLIER).toFixed(4);
+        const userRate1k = (Number(srv.rate || 0) * PROFIT_MULTIPLIER).toFixed(2);
         db.states[String(from.id)] = {
           step: 'order_link',
           serviceId,
@@ -740,7 +762,7 @@ export default async function handler(req, res) {
         await sendMsg(
           chatId,
           `✅ <b>সার্ভিস নির্বাচিত:</b> ${srv.name}\n` +
-            `💵 রেট (প্রতি 1000): <b>${userRate1k}</b>\n` +
+            `💵 রেট (প্রতি 1000): <b>${userRate1k} টাকা</b>\n` +
             `📊 Min: <b>${srv.min}</b> | Max: <b>${srv.max}</b>\n\n` +
             `এখন আপনার <b>Link / Username</b> পাঠান:`
         );
@@ -813,3 +835,4 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true });
   }
 }
+
