@@ -23,7 +23,7 @@ const DB_FILE = path.join('/tmp', 'efty_tg_bot_db.json');
 let cachedBotUsername = '';
 
 function defaultDb() {
-  return { users: {}, payments: [], orders: [], states: {} };
+  return { users: {}, payments: [], orders: [], resellers: [], states: {} };
 }
 
 function readTmpDb() {
@@ -34,6 +34,7 @@ function readTmpDb() {
         users: parsed.users || {},
         payments: parsed.payments || [],
         orders: parsed.orders || [],
+        resellers: parsed.resellers || [],
         states: parsed.states || {},
       };
     }
@@ -61,13 +62,13 @@ async function getDb() {
           users: parsed.users || {},
           payments: parsed.payments || [],
           orders: parsed.orders || [],
+          resellers: parsed.resellers || [],
           states: parsed.states || {},
         };
         writeTmpDb(db);
         return db;
       }
-      const fresh = readTmpDb();
-      return fresh;
+      return readTmpDb();
     } catch (err) {
       console.error('Redis read error, fallback to /tmp:', err);
       return readTmpDb();
@@ -170,6 +171,7 @@ function mainKeyboard(isAdmin = false) {
       { text: '🔍 অর্ডার স্ট্যাটাস', callback_data: 'menu_status' },
     ],
     [
+      { text: '🤝 রিসেলার সার্ভার', callback_data: 'menu_reseller' },
       { text: '📞 সাপোর্ট (@Efty67)', url: 'https://t.me/Efty67' },
     ],
   ];
@@ -196,8 +198,9 @@ async function sendHomeMenu(chatId, user, isAdmin) {
   const text =
     `✨ <b>স্বাগতম Efty Smm Panel BD 🇧🇩</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `⚡ <b>সবচেয়ে কম দামে সব সার্ভিস!</b>\n` +
+    `⚡ <b>সবচেয়ে কম দামে সব সার্ভিস! (শুরু ২১ টাকা থেকে)</b>\n` +
     `🎁 <b>প্রতি রেফারে বোনাস:</b> <b>${REFERRAL_BONUS.toFixed(2)} টাকা</b>\n` +
+    `🤝 <b>নিজের রিসেলার সার্ভার বানিয়ে বিজনেস করুন!</b>\n` +
     `💳 <b>bKash Deposit:</b> <code>${BKASH_NUMBER}</code>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `👤 <b>নাম:</b> ${user.name}\n` +
@@ -221,10 +224,11 @@ async function sendAdminMenu(chatId, db) {
       `📡 <b>MiniSMM API Balance:</b> <b>${apiBal?.balance ?? 'N/A'} ${apiBal?.currency || ''}</b>\n` +
       `👥 <b>মোট ইউজার:</b> ${Object.keys(db.users).length} জন\n` +
       `⏳ <b>Pending bKash:</b> ${pendingPays.length} টি\n` +
-      `📦 <b>মোট অর্ডার:</b> ${db.orders.length} টি\n\n` +
+      `📦 <b>মোট অর্ডার:</b> ${db.orders.length} টি\n` +
+      `🤝 <b>রিসেলার রিকোয়েস্ট:</b> ${(db.resellers || []).length} টি\n\n` +
       `<b>দ্রুত ব্যালেন্স অ্যাড কমান্ড:</b>\n` +
       `<code>/addbalance USER_ID AMOUNT</code>\n` +
-      `উদাহরণ: <code>/addbalance 1806670882 100</code>`,
+      `উদাহরণ: <code>/addbalance 7150722967 40</code>`,
     {
       inline_keyboard: [
         [{ text: '➕ ইউজার ব্যালেন্স অ্যাড করুন', callback_data: 'admin_add_bal_prompt' }],
@@ -253,6 +257,26 @@ async function sendReferralInfo(chatId, user) {
 
   return sendMsg(chatId, text, {
     inline_keyboard: [[{ text: '🔙 হোম মেনু', callback_data: 'home' }]],
+  });
+}
+
+async function sendResellerInfo(chatId, user) {
+  const text =
+    `🤝 <b>রিসেলার সার্ভার নিয়ে বিজনেস করুন!</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `আমাদের কাছ থেকে রিসেলার সার্ভার নিয়ে আপনি নিজেই নিজের SMM প্যানেল বা বিজনেস শুরু করতে পারবেন।\n\n` +
+    `✅ <b>সুবিধাসমূহ:</b>\n` +
+    `• কম রেটে API ও সার্ভিস অ্যাক্সেস\n` +
+    `• নিজস্ব রেটে ক্লায়েন্টদের কাছে বিক্রির সুযোগ\n` +
+    `• সাপোর্ট ও সেটআপ গাইডলাইন (${ADMIN_USERNAME})\n\n` +
+    `💳 <b>আপনার বর্তমান ব্যালেন্স:</b> <b>${Number(user.balance).toFixed(2)} টাকা</b>\n` +
+    `কাস্টম প্যাকেজ বা সেটআপের জন্য সরাসরি সাপোর্টে মেসেজ দিন: ${ADMIN_USERNAME}`;
+
+  return sendMsg(chatId, text, {
+    inline_keyboard: [
+      [{ text: '📞 সাপোর্টে কথা বলুন (@Efty67)', url: 'https://t.me/Efty67' }],
+      [{ text: '🔙 হোম মেনু', callback_data: 'home' }],
+    ],
   });
 }
 
@@ -326,6 +350,11 @@ export default async function handler(req, res) {
 
       if (data === 'menu_refer') {
         await sendReferralInfo(chatId, user);
+        return res.status(200).json({ ok: true });
+      }
+
+      if (data === 'menu_reseller') {
+        await sendResellerInfo(chatId, user);
         return res.status(200).json({ ok: true });
       }
 
@@ -495,7 +524,7 @@ export default async function handler(req, res) {
         await saveDb(db);
         await sendMsg(
           chatId,
-          `➕ <b>ইউজার ব্যালেন্স অ্যাড</b>\n\nইউজারের <b>User ID</b> এবং <b>টাকার পরিমাণ</b> স্পেস দিয়ে লিখুন:\nউদাহরণ: <code>123456789 200</code>`,
+          `➕ <b>ইউজার ব্যালেন্স অ্যাড</b>\n\nইউজারের <b>User ID</b> এবং <b>টাকার পরিমাণ</b> স্পেস দিয়ে লিখুন:\nউদাহরণ: <code>7150722967 40</code>`,
           { inline_keyboard: [[{ text: '🔙 বাতিল', callback_data: 'home' }]] }
         );
         return res.status(200).json({ ok: true });
@@ -652,12 +681,21 @@ export default async function handler(req, res) {
         await sendMsg(chatId, '⛔ শুধুমাত্র অ্যাডমিন এই কমান্ড ব্যবহার করতে পারবেন।');
         return res.status(200).json({ ok: true });
       }
-      const parts = text.split(/\s+/);
-      const targetId = String(parts[1] || '');
-      const amount = Number(parts[2]);
 
-      if (!targetId || Number.isNaN(amount) || amount === 0) {
-        await sendMsg(chatId, '⚠️ সঠিক নিয়ম: <code>/addbalance 123456789 100</code>');
+      const match = text.match(/^\/addbalance(?:@\w+)?\s+(\d+)\s+(-?\d+(?:\.\d+)?)$/i);
+      if (!match) {
+        await sendMsg(
+          chatId,
+          '⚠️ সঠিক নিয়ম: <code>/addbalance USER_ID AMOUNT</code>\nউদাহরণ: <code>/addbalance 7150722967 40</code>\n(ব্যালেন্স কমাতে চাইলে মাইনাস চিহ্ন দিন, যেমন: <code>/addbalance 7150722967 -40</code>)'
+        );
+        return res.status(200).json({ ok: true });
+      }
+
+      const targetId = match[1];
+      const amount = Number(match[2]);
+
+      if (!amount || Number.isNaN(amount)) {
+        await sendMsg(chatId, '⚠️ সঠিক টাকার পরিমাণ দিন।');
         return res.status(200).json({ ok: true });
       }
 
@@ -683,7 +721,7 @@ export default async function handler(req, res) {
       );
       await sendMsg(
         Number(targetId),
-        `💰 অ্যাডমিন আপনার অ্যাকাউন্টে <b>${amount > 0 ? '+' : ''}${amount} টাকা</b> ব্যালেন্স যোগ করেছেন!\n💳 বর্তমান ব্যালেন্স: <b>${db.users[targetId].balance.toFixed(2)} টাকা</b>`
+        `💰 অ্যাডমিন আপনার অ্যাকাউন্টে <b>${amount > 0 ? '+' : ''}${amount.toFixed(2)} টাকা</b> ব্যালেন্স যোগ করেছেন!\n💳 বর্তমান ব্যালেন্স: <b>${db.users[targetId].balance.toFixed(2)} টাকা</b>`
       ).catch(() => {});
 
       return res.status(200).json({ ok: true });
@@ -692,12 +730,20 @@ export default async function handler(req, res) {
     const state = db.states[String(from.id)];
     if (state) {
       if (state.step === 'admin_add_bal_input' && isAdmin) {
-        const parts = text.split(/\s+/);
-        const targetId = String(parts[0] || '');
-        const amount = Number(parts[1]);
+        const match = text.match(/^(\d+)\s+(-?\d+(?:\.\d+)?)$/);
+        if (!match) {
+          await sendMsg(
+            chatId,
+            '⚠️ সঠিক ফরম্যাটে লিখুন: <code>USER_ID AMOUNT</code>\nউদাহরণ: <code>7150722967 40</code>'
+          );
+          return res.status(200).json({ ok: true });
+        }
 
-        if (!targetId || Number.isNaN(amount) || amount === 0) {
-          await sendMsg(chatId, '⚠️ সঠিক ফরম্যাটে লিখুন: <code>123456789 100</code>');
+        const targetId = match[1];
+        const amount = Number(match[2]);
+
+        if (!amount || Number.isNaN(amount)) {
+          await sendMsg(chatId, '⚠️ সঠিক টাকার পরিমাণ লিখুন।');
           return res.status(200).json({ ok: true });
         }
 
@@ -717,8 +763,15 @@ export default async function handler(req, res) {
         delete db.states[String(from.id)];
         await saveDb(db);
 
-        await sendMsg(chatId, `✅ User <code>${targetId}</code>-এর নতুন ব্যালেন্স: <b>${db.users[targetId].balance.toFixed(2)} টাকা</b>`, mainKeyboard(true));
-        await sendMsg(Number(targetId), `💰 আপনার অ্যাকাউন্টে <b>${amount} টাকা</b> ব্যালেন্স যোগ হয়েছে! বর্তমান ব্যালেন্স: <b>${db.users[targetId].balance.toFixed(2)} টাকা</b>`).catch(() => {});
+        await sendMsg(
+          chatId,
+          `✅ User <code>${targetId}</code>-এর নতুন ব্যালেন্স: <b>${db.users[targetId].balance.toFixed(2)} টাকা</b>`,
+          mainKeyboard(true)
+        );
+        await sendMsg(
+          Number(targetId),
+          `💰 আপনার অ্যাকাউন্টে <b>${amount > 0 ? '+' : ''}${amount.toFixed(2)} টাকা</b> ব্যালেন্স যোগ হয়েছে! বর্তমান ব্যালেন্স: <b>${db.users[targetId].balance.toFixed(2)} টাকা</b>`
+        ).catch(() => {});
         return res.status(200).json({ ok: true });
       }
 
