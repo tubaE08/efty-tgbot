@@ -14,9 +14,10 @@ const REDIS_KEY = 'efty_smm_panel_bd_db_v1';
 const ADMIN_CHAT_ID = Number(process.env.ADMIN_ID || '1806670882');
 const ADMIN_USERNAME = '@Efty67';
 const BKASH_NUMBER = '01985060380';
-const BDT_MULTIPLIER = 100; // API রেট (যেমন 0.12 -> 12 টাকা)
-const EXTRA_PROFIT = 10; // প্রতিটি রেটের সাথে +10 টাকা যোগ
+const BDT_MULTIPLIER = 100; // API রেট (যেমন 0.11 -> 11 টাকা)
+const EXTRA_PROFIT = 10; // API রেটের সাথে প্রতি 1000-এ +10 টাকা লাভ
 const REFERRAL_BONUS = 2.00; // প্রতি সফল রেফারে ২ টাকা বোনাস
+const PAGE_SIZE = 15;
 
 const smm = new SmmApi(SMM_API_KEY, SMM_API_URL);
 const DB_FILE = path.join('/tmp', 'efty_tg_bot_db.json');
@@ -181,6 +182,64 @@ function mainKeyboard(isAdmin = false) {
   }
 
   return { inline_keyboard: rows };
+}
+
+function serviceCategoryKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: '🎵 TikTok', callback_data: 'srv_cat_tiktok_0' },
+        { text: '📘 Facebook', callback_data: 'srv_cat_facebook_0' },
+      ],
+      [
+        { text: '📸 Instagram', callback_data: 'srv_cat_instagram_0' },
+        { text: '🌐 অন্যান্য', callback_data: 'srv_cat_other_0' },
+      ],
+      [
+        { text: '📦 All Services (সব সার্ভিস)', callback_data: 'srv_cat_all_0' },
+      ],
+      [
+        { text: '🛍 Service ID দিয়ে অর্ডার', callback_data: 'menu_order' },
+        { text: '🔙 হোম মেনু', callback_data: 'home' },
+      ],
+    ],
+  };
+}
+
+function filterServicesByCategory(services, cat) {
+  if (!Array.isArray(services)) return [];
+  if (cat === 'all') return services;
+
+  const textOf = (s) => `${s.category || ''} ${s.name || ''}`.toLowerCase();
+
+  if (cat === 'tiktok') {
+    return services.filter((s) => textOf(s).includes('tiktok'));
+  }
+  if (cat === 'facebook') {
+    return services.filter((s) => {
+      const t = textOf(s);
+      return t.includes('facebook') || /\bfb\b/.test(t);
+    });
+  }
+  if (cat === 'instagram') {
+    return services.filter((s) => {
+      const t = textOf(s);
+      return t.includes('instagram') || /\big\b/.test(t);
+    });
+  }
+  if (cat === 'other') {
+    return services.filter((s) => {
+      const t = textOf(s);
+      return (
+        !t.includes('tiktok') &&
+        !t.includes('facebook') &&
+        !/\bfb\b/.test(t) &&
+        !t.includes('instagram') &&
+        !/\big\b/.test(t)
+      );
+    });
+  }
+  return services;
 }
 
 function getServiceRateBdt(apiRate) {
@@ -441,27 +500,83 @@ export default async function handler(req, res) {
       }
 
       if (data === 'menu_services') {
+        await sendMsg(
+          chatId,
+          `📋 <b>সার্ভিস ক্যাটাগরি বেছে নিন</b>\n\n` +
+            `আপনি কোন প্ল্যাটফর্মের সার্ভিস দেখতে চান? নিচের বাটনে ক্লিক করুন:\n` +
+            `💡 যেকোনো শব্দ দিয়ে খুঁজতে লিখুন: <code>/search followers</code> বা <code>/search views</code>`,
+          serviceCategoryKeyboard()
+        );
+        return res.status(200).json({ ok: true });
+      }
+
+      if (data.startsWith('srv_cat_')) {
+        const raw = data.replace('srv_cat_', '');
+        const lastUnderscore = raw.lastIndexOf('_');
+        const cat = lastUnderscore > -1 ? raw.slice(0, lastUnderscore) : raw;
+        const page = Math.max(0, Number(lastUnderscore > -1 ? raw.slice(lastUnderscore + 1) : 0) || 0);
+
         const services = await smm.services();
         if (!Array.isArray(services)) {
-          await sendMsg(chatId, '❌ সার্ভিস লোড করা যায়নি, একটু পর আবার চেষ্টা করুন।');
+          await sendMsg(chatId, '❌ সার্ভিস লোড করা যায়নি, একটু পর আবার চেষ্টা করুন।', serviceCategoryKeyboard());
           return res.status(200).json({ ok: true });
         }
 
-        const sample = services.slice(0, 15).map((s) => {
+        const filtered = filterServicesByCategory(services, cat);
+        const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+        const safePage = Math.min(page, totalPages - 1);
+        const startIdx = safePage * PAGE_SIZE;
+        const matched = filtered.slice(startIdx, startIdx + PAGE_SIZE);
+
+        const catTitleMap = {
+          tiktok: '🎵 TikTok সার্ভিসসমূহ',
+          facebook: '📘 Facebook সার্ভিসসমূহ',
+          instagram: '📸 Instagram সার্ভিসসমূহ',
+          other: '🌐 অন্যান্য সার্ভিসসমূহ',
+          all: '📦 All Services (সব সার্ভিস)',
+        };
+
+        if (!matched.length) {
+          await sendMsg(
+            chatId,
+            `❌ এই ক্যাটাগরিতে এখন কোনো সার্ভিস পাওয়া যায়নি। অন্য ক্যাটাগরি বা <code>/search</code> ব্যবহার করুন।`,
+            serviceCategoryKeyboard()
+          );
+          return res.status(200).json({ ok: true });
+        }
+
+        const sample = matched.map((s) => {
           const userRate1k = getServiceRateBdt(s.rate).toFixed(2);
           return `🔹 ID: <code>${s.service}</code> — <b>${s.name}</b>\n   💵 রেট (প্রতি 1000): <b>${userRate1k} টাকা</b> | Min: ${s.min} | Max: ${s.max}`;
         });
 
+        const navRow = [];
+        if (safePage > 0) {
+          navRow.push({ text: '⬅️ আগের ১৫টি', callback_data: `srv_cat_${cat}_${safePage - 1}` });
+        }
+        if (startIdx + PAGE_SIZE < filtered.length) {
+          navRow.push({ text: 'পরের ১৫টি ➡️', callback_data: `srv_cat_${cat}_${safePage + 1}` });
+        }
+
+        const keyboardRows = [
+          [{ text: '🛍 Service ID দিয়ে অর্ডার', callback_data: 'menu_order' }],
+        ];
+        if (navRow.length) keyboardRows.push(navRow);
+        keyboardRows.push([
+          { text: '🎵 TikTok', callback_data: 'srv_cat_tiktok_0' },
+          { text: '📘 Facebook', callback_data: 'srv_cat_facebook_0' },
+          { text: '📸 Instagram', callback_data: 'srv_cat_instagram_0' },
+        ]);
+        keyboardRows.push([
+          { text: '📦 All Services', callback_data: 'srv_cat_all_0' },
+          { text: '🔙 হোম মেনু', callback_data: 'home' },
+        ]);
+
         await sendMsg(
           chatId,
-          `📋 <b>সবচেয়ে কম দামে সার্ভিস লিস্ট (১-১৫):</b>\n\n${sample.join('\n\n')}\n\n` +
-            `🔎 নির্দিষ্ট সার্ভিস খুঁজতে লিখুন: <code>/search instagram</code> বা <code>/search tiktok</code>`,
-          {
-            inline_keyboard: [
-              [{ text: '🛍 এখনই অর্ডার করুন', callback_data: 'menu_order' }],
-              [{ text: '🔙 হোম মেনু', callback_data: 'home' }],
-            ],
-          }
+          `<b>${catTitleMap[cat] || '📋 সার্ভিস লিস্ট'}</b> (পেজ ${safePage + 1}/${totalPages} — মোট ${filtered.length}টি):\n\n${sample.join('\n\n')}\n\n` +
+            `👉 অর্ডার করতে <b>🛍 Service ID দিয়ে অর্ডার</b> বাটনে চাপুন।`,
+          { inline_keyboard: keyboardRows }
         );
         return res.status(200).json({ ok: true });
       }
