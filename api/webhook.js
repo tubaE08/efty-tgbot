@@ -10,8 +10,9 @@ const SMM_API_URL = process.env.SMM_API_URL || 'https://minismm.com/api/v2';
 const ADMIN_CHAT_ID = Number(process.env.ADMIN_ID || '1806670882');
 const ADMIN_USERNAME = '@Efty67';
 const BKASH_NUMBER = '01985060380';
-const PROFIT_MULTIPLIER = 1.10; // ১০% লাভ
-const REFERRAL_BONUS = 2.00; // প্রতি রেফারে ২ টাকা বোনাস
+const BDT_MULTIPLIER = 100; // API রেট (যেমন 0.12 -> 12 টাকা)
+const EXTRA_PROFIT = 10; // প্রতিটি রেটের সাথে +10 টাকা যোগ
+const REFERRAL_BONUS = 2.00; // প্রতি সফল রেফারে ২ টাকা বোনাস
 
 const smm = new SmmApi(SMM_API_KEY, SMM_API_URL);
 
@@ -121,10 +122,16 @@ function mainKeyboard(isAdmin = false) {
   return { inline_keyboard: rows };
 }
 
+// API রেট (যেমন 0.12) -> 12 টাকা BDT + 10 টাকা লাভ = 22 টাকা
+function getServiceRateBdt(apiRate) {
+  const baseBdt = Number(apiRate || 0) * BDT_MULTIPLIER;
+  return Number((baseBdt + EXTRA_PROFIT).toFixed(2));
+}
+
 function calcUserPrice(apiRate, qty = 1000, isPackage = false) {
-  const rateWithProfit = Number(apiRate || 0) * PROFIT_MULTIPLIER;
-  if (isPackage) return Number(rateWithProfit.toFixed(4));
-  return Number(((rateWithProfit / 1000) * Number(qty)).toFixed(4));
+  const ratePer1k = getServiceRateBdt(apiRate);
+  if (isPackage) return ratePer1k;
+  return Number(((ratePer1k / 1000) * Number(qty)).toFixed(2));
 }
 
 async function sendHomeMenu(chatId, tgUser, db) {
@@ -196,6 +203,7 @@ async function sendReferralInfo(chatId, tgUser, db) {
 }
 
 async function sendOrderConfirmation(chatId, from, user, draft, isAdmin) {
+  const ratePer1k = getServiceRateBdt(draft.apiRate);
   const totalCost = calcUserPrice(draft.apiRate, draft.quantity, draft.isPackage);
   const balAfter = Number(user.balance) - totalCost;
 
@@ -205,7 +213,8 @@ async function sendOrderConfirmation(chatId, from, user, draft, isAdmin) {
     `📦 <b>সার্ভিস:</b> ${draft.serviceName} (ID: <code>${draft.serviceId}</code>)\n` +
     `🔗 <b>লিংক:</b> <code>${draft.link}</code>\n` +
     `🔢 <b>পরিমাণ:</b> <b>${draft.isPackage ? 'Package (1)' : draft.quantity}</b>\n` +
-    `💵 <b>মোট খরচ:</b> <b>${totalCost.toFixed(2)} টাকা</b>\n` +
+    `💵 <b>রেট (প্রতি 1000):</b> <b>${ratePer1k.toFixed(2)} টাকা</b>\n` +
+    `💰 <b>মোট খরচ:</b> <b>${totalCost.toFixed(2)} টাকা</b>\n` +
     `💳 <b>আপনার বর্তমান ব্যালেন্স:</b> <b>${Number(user.balance).toFixed(2)} টাকা</b>\n` +
     `📉 <b>অর্ডারের পর ব্যালেন্স থাকবে:</b> <b>${balAfter >= 0 ? balAfter.toFixed(2) : 'অপর্যাপ্ত'} টাকা</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
@@ -313,7 +322,7 @@ export default async function handler(req, res) {
           return res.status(200).json({ ok: true });
         }
 
-        user.balance = Number((Number(user.balance) - charge).toFixed(4));
+        user.balance = Number((Number(user.balance) - charge).toFixed(2));
         user.ordersCount += 1;
         db.orders.push({
           id: db.orders.length + 1,
@@ -361,7 +370,7 @@ export default async function handler(req, res) {
         }
 
         const sample = services.slice(0, 15).map((s) => {
-          const userRate1k = (Number(s.rate || 0) * PROFIT_MULTIPLIER).toFixed(2);
+          const userRate1k = getServiceRateBdt(s.rate).toFixed(2);
           return `🔹 ID: <code>${s.service}</code> — <b>${s.name}</b>\n   💵 রেট (প্রতি 1000): <b>${userRate1k} টাকা</b> | Min: ${s.min} | Max: ${s.max}`;
         });
 
@@ -386,7 +395,7 @@ export default async function handler(req, res) {
           chatId,
           `🛍 <b>নতুন অর্ডার করুন</b>\n\n` +
             `আপনার বর্তমান ব্যালেন্স: <b>${Number(user.balance).toFixed(2)} টাকা</b>\n\n` +
-            `আপনি যে সার্ভিসটি নিতে চান তার <b>Service ID</b> দিন (যেমন: <code>125</code>):`,
+            `আপনি যে সার্ভিসটি নিতে চান তার <b>Service ID</b> দিন (যেমন: <code>2994</code>):`,
           { inline_keyboard: [[{ text: '🔙 বাতিল করুন', callback_data: 'home' }]] }
         );
         return res.status(200).json({ ok: true });
@@ -466,8 +475,8 @@ export default async function handler(req, res) {
           payItem.status = 'approved';
           const targetUser = db.users[String(payItem.userId)];
           if (targetUser) {
-            targetUser.balance = Number((Number(targetUser.balance) + Number(payItem.amount)).toFixed(4));
-            targetUser.totalDeposit = Number((Number(targetUser.totalDeposit || 0) + Number(payItem.amount)).toFixed(4));
+            targetUser.balance = Number((Number(targetUser.balance) + Number(payItem.amount)).toFixed(2));
+            targetUser.totalDeposit = Number((Number(targetUser.totalDeposit || 0) + Number(payItem.amount)).toFixed(2));
           }
           saveDb(db);
 
@@ -542,7 +551,7 @@ export default async function handler(req, res) {
         ) {
           user.referredBy = referrerId;
           db.users[referrerId].balance = Number(
-            (Number(db.users[referrerId].balance || 0) + REFERRAL_BONUS).toFixed(4)
+            (Number(db.users[referrerId].balance || 0) + REFERRAL_BONUS).toFixed(2)
           );
           db.users[referrerId].referralsCount = Number(db.users[referrerId].referralsCount || 0) + 1;
           saveDb(db);
@@ -579,7 +588,7 @@ export default async function handler(req, res) {
       }
 
       const listText = matched.map((s) => {
-        const rate1k = (Number(s.rate || 0) * PROFIT_MULTIPLIER).toFixed(2);
+        const rate1k = getServiceRateBdt(s.rate).toFixed(2);
         return `🔹 ID: <code>${s.service}</code> — <b>${s.name}</b>\n   💵 রেট/1k: <b>${rate1k} টাকা</b> | Min: ${s.min} | Max: ${s.max}`;
       });
 
@@ -616,7 +625,7 @@ export default async function handler(req, res) {
         };
       }
 
-      db.users[targetId].balance = Number((Number(db.users[targetId].balance) + amount).toFixed(4));
+      db.users[targetId].balance = Number((Number(db.users[targetId].balance) + amount).toFixed(2));
       saveDb(db);
 
       await sendMsg(
@@ -655,7 +664,7 @@ export default async function handler(req, res) {
             referredBy: null,
           };
         }
-        db.users[targetId].balance = Number((Number(db.users[targetId].balance) + amount).toFixed(4));
+        db.users[targetId].balance = Number((Number(db.users[targetId].balance) + amount).toFixed(2));
         delete db.states[String(from.id)];
         saveDb(db);
 
@@ -736,7 +745,7 @@ export default async function handler(req, res) {
       if (state.step === 'order_service_id') {
         const serviceId = Number(text);
         if (!serviceId) {
-          await sendMsg(chatId, '⚠️ সঠিক Service ID নম্বর দিন (যেমন: <code>125</code>):');
+          await sendMsg(chatId, '⚠️ সঠিক Service ID নম্বর দিন (যেমন: <code>2994</code>):');
           return res.status(200).json({ ok: true });
         }
 
@@ -747,7 +756,7 @@ export default async function handler(req, res) {
           return res.status(200).json({ ok: true });
         }
 
-        const userRate1k = (Number(srv.rate || 0) * PROFIT_MULTIPLIER).toFixed(2);
+        const userRate1k = getServiceRateBdt(srv.rate).toFixed(2);
         db.states[String(from.id)] = {
           step: 'order_link',
           serviceId,
@@ -835,4 +844,5 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true });
   }
 }
+
 
